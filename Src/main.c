@@ -18,9 +18,13 @@
 /* USER CODE END Header */
 /* Includes ------------------------------------------------------------------*/
 #include "main.h"
+
 /* Private includes ----------------------------------------------------------*/
 /* USER CODE BEGIN Includes */
 #include "global.h"
+#include "LCD_driver.h"
+#include "st7789.h"
+#include <stdio.h>
 /* USER CODE END Includes */
 
 /* Private typedef -----------------------------------------------------------*/
@@ -57,6 +61,7 @@ static void MX_CAN1_Init(void);
 static void MX_USART1_UART_Init(void);
 static void MX_TIM2_Init(void);
 static void MX_ADC1_Init(void);
+static void MX_SPI1_Init(void);
 /* USER CODE BEGIN PFP */
 
 /* USER CODE END PFP */
@@ -70,17 +75,18 @@ uint8_t TxData1[8];
 uint8_t RxData1[8];
 
 uint32_t TxMailbox;
-
-int datacheck1 = 0;
+uint8_t buffer[16];
+uint8_t buffer_index = 0;
+uint8_t datacheck1 = 0;
+uint16_t DID_len = 0;
+uint16_t DID_curlen = 0;
+char lcd_str[20];
 
 void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
 {
 	HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &RxHeader1 ,RxData1);
-	if (RxHeader1.DLC == 2)
-	{
-		datacheck1 = 1;
-		HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
-	}
+	datacheck1 = 1;
+	HAL_GPIO_TogglePin(LED1_GPIO_Port, LED1_Pin);
 }
 /* USER CODE END 0 */
 
@@ -116,41 +122,92 @@ int main(void)
   MX_USART1_UART_Init();
   MX_TIM2_Init();
   MX_ADC1_Init();
+  MX_SPI1_Init();
   /* USER CODE BEGIN 2 */
   HAL_TIM_Base_Start_IT(&htim2);
   HAL_ADC_Start(&hadc1);
   HAL_CAN_Start(&hcan1);
   HAL_CAN_ActivateNotification(&hcan1, CAN_IT_RX_FIFO0_MSG_PENDING);
 
-  TxHeader1.DLC   = 4;  // data length
-  TxHeader1.IDE   = CAN_ID_STD;
-  TxHeader1.RTR   = CAN_RTR_DATA;
-  TxHeader1.StdId = 0x012;  // ID
+  lcd_init();
+  ST7789_Init();
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-	  if(datacheck1) {
-	  	  HAL_ADC_Start(&hadc1);
-	  	  HAL_ADC_PollForConversion(&hadc1, HAL_MAX_DELAY);
-	  	  uint16_t adcValue = HAL_ADC_GetValue(&hadc1);
-	  	  HAL_ADC_Stop(&hadc1);
+    if (datacheck1) {
+      uint8_t frame_type = (RxData1[0] >> 4) & 0xFF;
+      if (frame_type == 0x01) {
+    	  ST7789_Fill_Color(BLACK);
+    	  ST7789_WriteString(10, 20, "Waiting...", Font_11x18, RED, WHITE);
+    	  TxHeader1.DLC   = 4;
+    	  TxHeader1.IDE   = CAN_ID_STD;
+          TxHeader1.RTR   = CAN_RTR_DATA;
+          TxHeader1.StdId = 0x210;
+          DID_len = (RxData1[0] & 0x0F) + RxData1[1];
+          buffer[0] = RxData1[5];
+          buffer[1] = RxData1[6];
+          buffer[2] = RxData1[7];
+          DID_curlen = 3;
+          TxData1[0] = 0x30;
+          TxData1[1] = RxHeader1.IDE + 0x40;
+          TxData1[2] = RxData1[0];
+          TxData1[3] = RxData1[1];
+          if (HAL_CAN_AddTxMessage(&hcan1, &TxHeader1, TxData1, &TxMailbox) == HAL_OK) {
+        	  HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
+          }
+      } else if (frame_type == 0x02 && DID_curlen != DID_len) {
+    	  DID_curlen += RxHeader1.DLC - 1;
+    	  for (int i=0; i<RxHeader1.DLC - 1; i++) {
+    		  buffer[3+i] = RxData1[i+1];
+    	  }
+      } else if (DID_curlen == DID_len) {
+      	  TxHeader1.DLC   = 4;
+      	  TxHeader1.IDE   = CAN_ID_STD;
+          TxHeader1.RTR   = CAN_RTR_DATA;
+          TxHeader1.StdId = 0x210;
+          buffer[0] = RxData1[5];
+          buffer[1] = RxData1[6];
+          buffer[2] = RxData1[7];
+          DID_curlen = 3;
+          TxData1[0] = 0x30;
+          TxData1[1] = RxHeader1.IDE + 0x40;
+          TxData1[2] = RxData1[0];
+          TxData1[3] = RxData1[1];
+          DID_len = 0;
+          DID_curlen = 0;
+          sprintf(lcd_str, "Data received: %d;%d;%d;%d;%d", buffer[0],buffer[1],buffer[2],buffer[3],buffer[4],buffer[5]);
+          ST7789_WriteString(10, 20, lcd_str, Font_11x18, RED, WHITE);
+          if (HAL_CAN_AddTxMessage(&hcan1, &TxHeader1, TxData1, &TxMailbox) == HAL_OK) {
+        	  HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
+          }
+      }
+      datacheck1 = 0;
+    }
+	  // if(datacheck1) {
+	  // 	HAL_ADC_Start(&hadc1);
+	  // 	HAL_ADC_PollForConversion(&hadc1, HAL_MAX_DELAY);
+	  // 	uint16_t adcValue = HAL_ADC_GetValue(&hadc1);
+	  // 	HAL_ADC_Stop(&hadc1);
 
-		  TxData1[0] = RxHeader1.IDE + 0x40;
-		  TxData1[1] = RxData1[0];
-		  TxData1[2] = RxData1[1];
-		  TxData1[3] = (adcValue >> 8) & 0xFF;
-		  TxData1[4] = (adcValue >> 0) & 0XFF;
+//      TxHeader1.DLC   = 5;
+//      TxHeader1.IDE   = CAN_ID_STD;
+//      TxHeader1.RTR   = CAN_RTR_DATA;
+//      TxHeader1.StdId = 0x012;
 
-		  HAL_UART_Transmit(&huart1, (void *)str , sprintf(str, "3: %d - 4: %d\r\n", TxData1[3], TxData1[4]), 1000);
-		  if (HAL_CAN_AddTxMessage(&hcan1, &TxHeader1, TxData1, &TxMailbox) == HAL_OK) {
-			  HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
-		  }
-	  }
-
-	  	    HAL_Delay(2000);
+		  // TxData1[0] = RxHeader1.IDE + 0x40;
+		  // TxData1[1] = RxData1[0];
+		  // TxData1[2] = RxData1[1];
+		  // TxData1[3] = (adcValue >> 8) & 0xFF;
+		  // TxData1[4] = (adcValue >> 0) & 0XFF;
+		  // HAL_UART_Transmit(&huart1, (void *)str , sprintf(str, "%d\r\n", adcValue), 1000);
+		  // if (HAL_CAN_AddTxMessage(&hcan1, &TxHeader1, TxData1, &TxMailbox) == HAL_OK) {
+			//   HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
+		  // }
+		//   datacheck1 = 0;
+	  // }
     /* USER CODE END WHILE */
 
     /* USER CODE BEGIN 3 */
@@ -227,7 +284,7 @@ static void MX_ADC1_Init(void)
   hadc1.Init.ClockPrescaler = ADC_CLOCK_SYNC_PCLK_DIV4;
   hadc1.Init.Resolution = ADC_RESOLUTION_12B;
   hadc1.Init.ScanConvMode = DISABLE;
-  hadc1.Init.ContinuousConvMode = ENABLE;
+  hadc1.Init.ContinuousConvMode = DISABLE;
   hadc1.Init.DiscontinuousConvMode = DISABLE;
   hadc1.Init.ExternalTrigConvEdge = ADC_EXTERNALTRIGCONVEDGE_NONE;
   hadc1.Init.ExternalTrigConv = ADC_SOFTWARE_START;
@@ -242,7 +299,7 @@ static void MX_ADC1_Init(void)
 
   /** Configure for the selected ADC regular channel its corresponding rank in the sequencer and its sample time.
   */
-  sConfig.Channel = ADC_CHANNEL_6;
+  sConfig.Channel = ADC_CHANNEL_14;
   sConfig.Rank = 1;
   sConfig.SamplingTime = ADC_SAMPLETIME_3CYCLES;
   if (HAL_ADC_ConfigChannel(&hadc1, &sConfig) != HAL_OK)
@@ -302,6 +359,44 @@ static void MX_CAN1_Init(void)
 
     HAL_CAN_ConfigFilter(&hcan1, &canfilterconfig);
   /* USER CODE END CAN1_Init 2 */
+
+}
+
+/**
+  * @brief SPI1 Initialization Function
+  * @param None
+  * @retval None
+  */
+static void MX_SPI1_Init(void)
+{
+
+  /* USER CODE BEGIN SPI1_Init 0 */
+
+  /* USER CODE END SPI1_Init 0 */
+
+  /* USER CODE BEGIN SPI1_Init 1 */
+
+  /* USER CODE END SPI1_Init 1 */
+  /* SPI1 parameter configuration*/
+  hspi1.Instance = SPI1;
+  hspi1.Init.Mode = SPI_MODE_MASTER;
+  hspi1.Init.Direction = SPI_DIRECTION_2LINES;
+  hspi1.Init.DataSize = SPI_DATASIZE_8BIT;
+  hspi1.Init.CLKPolarity = SPI_POLARITY_HIGH;
+  hspi1.Init.CLKPhase = SPI_PHASE_1EDGE;
+  hspi1.Init.NSS = SPI_NSS_HARD_OUTPUT;
+  hspi1.Init.BaudRatePrescaler = SPI_BAUDRATEPRESCALER_4;
+  hspi1.Init.FirstBit = SPI_FIRSTBIT_MSB;
+  hspi1.Init.TIMode = SPI_TIMODE_DISABLE;
+  hspi1.Init.CRCCalculation = SPI_CRCCALCULATION_DISABLE;
+  hspi1.Init.CRCPolynomial = 10;
+  if (HAL_SPI_Init(&hspi1) != HAL_OK)
+  {
+    Error_Handler();
+  }
+  /* USER CODE BEGIN SPI1_Init 2 */
+
+  /* USER CODE END SPI1_Init 2 */
 
 }
 
@@ -395,22 +490,31 @@ static void MX_GPIO_Init(void)
   /* GPIO Ports Clock Enable */
   __HAL_RCC_GPIOH_CLK_ENABLE();
   __HAL_RCC_GPIOA_CLK_ENABLE();
+  __HAL_RCC_GPIOC_CLK_ENABLE();
   __HAL_RCC_GPIOB_CLK_ENABLE();
 
   /*Configure GPIO pin Output Level */
-  HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, GPIO_PIN_RESET);
+  HAL_GPIO_WritePin(GPIOB, LED_Pin|LED1_Pin|GPIO_PIN_2|GPIO_PIN_6
+                          |GPIO_PIN_7|GPIO_PIN_8|GPIO_PIN_9, GPIO_PIN_RESET);
 
-  /*Configure GPIO pin : LED_Pin */
-  GPIO_InitStruct.Pin = LED_Pin;
+  /*Configure GPIO pins : LED_Pin LED1_Pin PB2 PB6
+                           PB7 PB8 PB9 */
+  GPIO_InitStruct.Pin = LED_Pin|LED1_Pin|GPIO_PIN_2|GPIO_PIN_6
+                          |GPIO_PIN_7|GPIO_PIN_8|GPIO_PIN_9;
   GPIO_InitStruct.Mode = GPIO_MODE_OUTPUT_PP;
   GPIO_InitStruct.Pull = GPIO_NOPULL;
   GPIO_InitStruct.Speed = GPIO_SPEED_FREQ_LOW;
-  HAL_GPIO_Init(LED_GPIO_Port, &GPIO_InitStruct);
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
+
+  /*Configure GPIO pin : PB4 */
+  GPIO_InitStruct.Pin = GPIO_PIN_4;
+  GPIO_InitStruct.Mode = GPIO_MODE_INPUT;
+  GPIO_InitStruct.Pull = GPIO_PULLUP;
+  HAL_GPIO_Init(GPIOB, &GPIO_InitStruct);
 
 }
 
 /* USER CODE BEGIN 4 */
-uint8_t buffer[MAX_BUFFER_SIZE];
 
 void HAL_UART_RxCpltCallback(UART_HandleTypeDef *huart) {
 	if( huart -> Instance == USART1 ) {

@@ -21,4 +21,6 @@ extern uint8_t data_flag1;
 extern uint8_t data_flag2;
 extern uint8_t dataCounter;
 
+extern SPI_HandleTypeDef hspi1;
+
 #endif /* INC_GLOBAL_H_ */
