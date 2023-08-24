@@ -80,13 +80,15 @@ uint8_t buffer_index = 0;
 uint8_t datacheck1 = 0;
 uint16_t DID_len = 0;
 uint16_t DID_curlen = 0;
+uint8_t ECU_lock = 1;
+uint8_t rand_byte[4];
 char lcd_str[20];
 
 void HAL_CAN_RxFifo0MsgPendingCallback(CAN_HandleTypeDef *hcan)
 {
 	HAL_CAN_GetRxMessage(hcan, CAN_RX_FIFO0, &RxHeader1 ,RxData1);
+	HAL_UART_Transmit(&huart1, lcd_str, sprintf(lcd_str, "%d:%d:%d:%d\r\n", RxData1[2], RxData1[3], RxData1[4], RxData1[5]), 1000);
 	datacheck1 = 1;
-	HAL_GPIO_TogglePin(LED1_GPIO_Port, LED1_Pin);
 }
 /* USER CODE END 0 */
 
@@ -131,61 +133,109 @@ int main(void)
 
   lcd_init();
   ST7789_Init();
+  ST7789_Fill_Color(WHITE);
   /* USER CODE END 2 */
 
   /* Infinite loop */
   /* USER CODE BEGIN WHILE */
   while (1)
   {
-    if (datacheck1) {
-      uint8_t frame_type = (RxData1[0] >> 4) & 0xFF;
-      if (frame_type == 0x01) {
-    	  ST7789_Fill_Color(BLACK);
-    	  ST7789_WriteString(10, 20, "Waiting...", Font_11x18, RED, WHITE);
-    	  TxHeader1.DLC   = 4;
-    	  TxHeader1.IDE   = CAN_ID_STD;
-          TxHeader1.RTR   = CAN_RTR_DATA;
-          TxHeader1.StdId = 0x210;
-          DID_len = (RxData1[0] & 0x0F) + RxData1[1];
-          buffer[0] = RxData1[5];
-          buffer[1] = RxData1[6];
-          buffer[2] = RxData1[7];
-          DID_curlen = 3;
-          TxData1[0] = 0x30;
-          TxData1[1] = RxHeader1.IDE + 0x40;
-          TxData1[2] = RxData1[0];
-          TxData1[3] = RxData1[1];
-          if (HAL_CAN_AddTxMessage(&hcan1, &TxHeader1, TxData1, &TxMailbox) == HAL_OK) {
-        	  HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
-          }
-      } else if (frame_type == 0x02 && DID_curlen != DID_len) {
-    	  DID_curlen += RxHeader1.DLC - 1;
-    	  for (int i=0; i<RxHeader1.DLC - 1; i++) {
-    		  buffer[3+i] = RxData1[i+1];
-    	  }
-      } else if (DID_curlen == DID_len) {
-      	  TxHeader1.DLC   = 4;
-      	  TxHeader1.IDE   = CAN_ID_STD;
-          TxHeader1.RTR   = CAN_RTR_DATA;
-          TxHeader1.StdId = 0x210;
-          buffer[0] = RxData1[5];
-          buffer[1] = RxData1[6];
-          buffer[2] = RxData1[7];
-          DID_curlen = 3;
-          TxData1[0] = 0x30;
-          TxData1[1] = RxHeader1.IDE + 0x40;
-          TxData1[2] = RxData1[0];
-          TxData1[3] = RxData1[1];
-          DID_len = 0;
-          DID_curlen = 0;
-          sprintf(lcd_str, "Data received: %d;%d;%d;%d;%d", buffer[0],buffer[1],buffer[2],buffer[3],buffer[4],buffer[5]);
-          ST7789_WriteString(10, 20, lcd_str, Font_11x18, RED, WHITE);
-          if (HAL_CAN_AddTxMessage(&hcan1, &TxHeader1, TxData1, &TxMailbox) == HAL_OK) {
-        	  HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
-          }
-      }
-      datacheck1 = 0;
-    }
+	  HAL_GPIO_WritePin(LED1_GPIO_Port, LED1_Pin, !ECU_lock);
+	  if (datacheck1) {
+		  if (RxData1[1] == 0x01) {
+			  rand_byte[0] = 1;
+			  rand_byte[1] = 2;
+			  rand_byte[2] = 3;
+			  rand_byte[3] = 4;
+			  TxHeader1.DLC   = 6;
+			  TxHeader1.IDE   = CAN_ID_STD;
+			  TxHeader1.RTR   = CAN_RTR_DATA;
+			  TxHeader1.StdId = 0x210;
+
+			  TxData1[0] = RxData1[0] + 0x40;
+			  TxData1[1] = 0x01;
+			  TxData1[2] = rand_byte[0];
+			  TxData1[3] = rand_byte[1];
+			  TxData1[4] = rand_byte[2];
+			  TxData1[5] = rand_byte[3];
+
+			  if (HAL_CAN_AddTxMessage(&hcan1, &TxHeader1, TxData1, &TxMailbox) == HAL_OK) {
+
+			  }
+			  RxData1[1] == 0;
+		  } else if (RxData1[1] == 0x02) {
+			  if((RxData1[2] == (rand_byte[0] + 1)) &&
+				 (RxData1[3] == (rand_byte[1] + 1)) &&
+				 (RxData1[4] == (rand_byte[2] + 1)) &&
+				 (RxData1[5] == (rand_byte[3] + 1)))
+			  {
+				  TxHeader1.DLC   = 6;
+				  TxHeader1.IDE   = CAN_ID_STD;
+				  TxHeader1.RTR   = CAN_RTR_DATA;
+				  TxHeader1.StdId = 0x210;
+
+				  TxData1[0] = RxData1[0] + 0x40;
+				  TxData1[1] = 0x02;
+//				  HAL_GPIO_WritePin(LED_GPIO_Port, LED_Pin, 1);
+				  ECU_lock = 0;
+			  } else {
+//				  HAL_Delay(10000);
+			  }
+			  RxData1[1] = 0;
+		  }
+	  }
+//    if (datacheck1) {
+//      uint8_t frame_type = (RxData1[0] >> 4) & 0xFF;
+//      if (frame_type == 0x01) {
+//    	  ST7789_Fill_Color(BLACK);
+//    	  ST7789_WriteString(10, 20, "Waiting...", Font_11x18, RED, WHITE);
+//    	  TxHeader1.DLC   = 4;
+//    	  TxHeader1.IDE   = CAN_ID_STD;
+//          TxHeader1.RTR   = CAN_RTR_DATA;
+//          TxHeader1.StdId = 0x210;
+//
+//          buffer[0] = RxData1[5];
+//          buffer[1] = RxData1[6];
+//          buffer[2] = RxData1[7];
+//          DID_curlen = 3;
+//          DID_len = (RxData1[0] & 0x0F) + RxData1[1];
+//
+//          TxData1[0] = 0x30;
+//          TxData1[1] = RxHeader1.IDE + 0x40;
+//          TxData1[2] = RxData1[0];
+//          TxData1[3] = RxData1[1];
+//
+//          if (HAL_CAN_AddTxMessage(&hcan1, &TxHeader1, TxData1, &TxMailbox) == HAL_OK) {
+//        	  HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
+//          }
+//      } else if (frame_type == 0x02 && DID_curlen != DID_len) {
+//    	  DID_curlen += RxHeader1.DLC - 1;
+//    	  for (int i=0; i<RxHeader1.DLC - 1; i++) {
+//    		  buffer[3+i] = RxData1[i+1];
+//    	  }
+//      } else if (DID_curlen == DID_len) {
+//      	  TxHeader1.DLC   = 4;
+//      	  TxHeader1.IDE   = CAN_ID_STD;
+//          TxHeader1.RTR   = CAN_RTR_DATA;
+//          TxHeader1.StdId = 0x210;
+//          buffer[0] = RxData1[5];
+//          buffer[1] = RxData1[6];
+//          buffer[2] = RxData1[7];
+//          DID_curlen = 3;
+//          TxData1[0] = 0x30;
+//          TxData1[1] = RxHeader1.IDE + 0x40;
+//          TxData1[2] = RxData1[0];
+//          TxData1[3] = RxData1[1];
+//          DID_len = 0;
+//          DID_curlen = 0;
+//          sprintf(lcd_str, "Data received: %d;%d;%d;%d;%d", buffer[0],buffer[1],buffer[2],buffer[3],buffer[4],buffer[5]);
+//          ST7789_WriteString(10, 20, lcd_str, Font_11x18, RED, WHITE);
+//          if (HAL_CAN_AddTxMessage(&hcan1, &TxHeader1, TxData1, &TxMailbox) == HAL_OK) {
+//        	  HAL_GPIO_TogglePin(LED_GPIO_Port, LED_Pin);
+//          }
+//      }
+//      datacheck1 = 0;
+//    }
 	  // if(datacheck1) {
 	  // 	HAL_ADC_Start(&hadc1);
 	  // 	HAL_ADC_PollForConversion(&hadc1, HAL_MAX_DELAY);
